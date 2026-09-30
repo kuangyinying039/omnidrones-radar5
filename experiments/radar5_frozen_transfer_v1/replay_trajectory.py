@@ -1,5 +1,4 @@
 import os
-import os
 import sys
 import json
 from pathlib import Path
@@ -32,6 +31,10 @@ frame_dir = Path(
     "runs/radar5_single_scene_seed7000000/replay_frames"
 )
 frame_dir.mkdir(parents=True, exist_ok=True)
+# Never reuse stale frames from an interrupted replay.  A video is valid only
+# when this run writes exactly one PNG for every trajectory frame.
+for stale in frame_dir.glob("frame_*.png"):
+    stale.unlink()
 
 with trajectory_path.open() as handle:
     data = json.load(handle)
@@ -39,6 +42,29 @@ with trajectory_path.open() as handle:
 scene = data["scene"]
 frames = data["frames"]
 stage = omni.usd.get_context().get_stage()
+
+if not frames:
+    raise RuntimeError("trajectory contains no frames")
+expected_decisions = [int(frame["decision"]) for frame in frames]
+if expected_decisions != list(range(len(frames))):
+    raise RuntimeError(f"trajectory decisions are not contiguous: {expected_decisions[:5]}")
+
+
+def _assert_building_clearance(rects, minimum_gap=0.25):
+    """Reject overlapping Radar5 rectangles before creating geometry."""
+    for i, (ax0, ay0, ax1, ay1) in enumerate(rects):
+        for j in range(i):
+            bx0, by0, bx1, by1 = rects[j]
+            gap_x = max(0.0, max(ax0, bx0) - min(ax1, bx1))
+            gap_y = max(0.0, max(ay0, by0) - min(ay1, by1))
+            if gap_x == 0.0 and gap_y == 0.0:
+                raise RuntimeError(f"Radar5 buildings {j} and {i} overlap")
+            separation = max(gap_x, gap_y)
+            if separation < minimum_gap:
+                raise RuntimeError(f"Radar5 buildings {j} and {i} violate {minimum_gap} m gap")
+
+
+_assert_building_clearance(scene["buildings"])
 
 
 def _bind_material(prim, name, color, opacity=1.0):
@@ -142,6 +168,7 @@ evader_marker_op = evader_marker.AddTranslateOp()
 camera = rep.create.camera(
     position=(18.0, -18.0, 27.0),
     look_at=(8.0, 12.0, 3.0),
+    focal_length=24.0,
 )
 
 rep.create.light(
@@ -162,6 +189,18 @@ render_product = rep.create.render_product(
 rgb = rep.AnnotatorRegistry.get_annotator("rgb")
 rgb.attach([render_product])
 
+# Display-only radar/FOV cones.  The policy still consumes the Radar5 bridge's
+# geometric sensor surrogate; these cones make that configured field of view
+# visible in the replay without stepping the simulation.
+radar_cones = []
+for index in range(3):
+    cone = UsdGeom.Cone.Define(stage, f"/World/radar_fov_{index}")
+    cone.CreateRadiusAttr(3.5)
+    cone.CreateHeightAttr(7.0)
+    cone.CreateDisplayColorAttr([(0.1, 0.45, 1.0)])
+    cone.CreateDisplayOpacityAttr([0.10])
+    radar_cones.append(cone.AddTranslateOp())
+
 for frame in frames:
     for index, (xyz, quat) in enumerate(
         zip(frame["pursuers_xyz"], frame["pursuers_quat"])
@@ -171,6 +210,7 @@ for frame in frames:
         pursuer_orient_ops[index].Set(
             Gf.Quatd(float(quat[0]), Gf.Vec3d(*map(float, quat[1:])))
         )
+        radar_cones[index].Set(Gf.Vec3d(*xyz))
 
     evader_op.Set(Gf.Vec3d(*frame["target_xyz"]))
     evader_marker_op.Set(Gf.Vec3d(*frame["target_xyz"]))
@@ -184,4 +224,7 @@ for frame in frames:
     Image.fromarray(image[:, :, :3]).save(output)
 
 print("REPLAY_OK", len(frames), "frames", flush=True)
+written = sorted(frame_dir.glob("frame_*.png"))
+if len(written) != len(frames):
+    raise RuntimeError(f"expected {len(frames)} frames, wrote {len(written)}")
 simulation_app.close()
