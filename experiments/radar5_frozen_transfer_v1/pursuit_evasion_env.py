@@ -71,6 +71,7 @@ class PursuitConfig(WeakCommConfig):
     building_state_capacity: int = 0
     building_min_size: float = 2.0
     building_max_size: float = 4.5
+    building_min_gap: float = 0.25
     # Default paper environment: the evader both repels nearby pursuers and
     # seeks the far side of buildings to create line-of-sight occlusion.
     evader_policy: str = "occlusion"  # random, repulsive, occlusion, external
@@ -307,7 +308,7 @@ class PursuitEvasionEnv(WeakCommBeliefGraphEnv):
         c = self.cfg
         rectangles = []
         protected = np.vstack([self.positions.astype(float), self.dynamic_targets])
-        for _ in range(c.building_count * 12):
+        for _ in range(c.building_count * 100):
             if len(rectangles) >= c.building_count:
                 break
             width, height = self.rng.uniform(c.building_min_size, c.building_max_size, size=2)
@@ -315,6 +316,18 @@ class PursuitEvasionEnv(WeakCommBeliefGraphEnv):
             y0 = float(self.rng.uniform(1.0, max(1.01, c.grid_size - height - 1.0)))
             rect = (x0, y0, x0 + width, y0 + height)
             if any(_point_in_rect(point, _expand_rect(rect, 0.8)) for point in protected):
+                continue
+            # Keep a real geometric gap between buildings so that rendered
+            # cubes cannot intersect even when their projections overlap.
+            if any(
+                not (
+                    rect[2] + c.building_min_gap <= other[0]
+                    or other[2] + c.building_min_gap <= rect[0]
+                    or rect[3] + c.building_min_gap <= other[1]
+                    or other[3] + c.building_min_gap <= rect[1]
+                )
+                for other in rectangles
+            ):
                 continue
             rectangles.append(rect)
         return rectangles
