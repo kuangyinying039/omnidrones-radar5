@@ -1,4 +1,5 @@
 import os
+import os
 import sys
 import json
 from pathlib import Path
@@ -62,6 +63,7 @@ for index, (rect, height) in enumerate(
         Gf.Vec3d((x0 + x1) / 2, (y0 + y1) / 2, height / 2)
     )
     building.CreateDisplayColorAttr([(0.35, 0.38, 0.42)])
+    building.CreateDisplayOpacityAttr([0.28])
 
 # USD transform order: translate first, then scale.
 for prim in [ground] + [
@@ -73,15 +75,9 @@ for prim in [ground] + [
     scale = next(op for op in ops if op.GetOpType() == UsdGeom.XformOp.TypeScale)
     prim.SetXformOpOrder([translate, scale])
 
-pursuer_ops = []
-pursuer_orient_ops = []
 hummingbird_usd = os.environ["HUMMINGBIRD_USD"]
 
-for index in range(3):
-    prim = create_prim(
-        f"/World/pursuer_{index}",
-        usd_path=hummingbird_usd,
-    )
+def _transform_ops(prim):
     xform = UsdGeom.Xformable(prim)
     ops = xform.GetOrderedXformOps()
     translate = next(
@@ -94,23 +90,33 @@ for index in range(3):
          if op.GetOpType() == UsdGeom.XformOp.TypeOrient),
         None,
     )
-    pursuer_ops.append(
-        translate if translate is not None else xform.AddTranslateOp()
-    )
-    pursuer_orient_ops.append(
-        orient if orient is not None else xform.AddOrientOp()
-    )
+    if translate is None:
+        translate = xform.AddTranslateOp()
+    if orient is None:
+        orient = xform.AddOrientOp()
+    return translate, orient
 
-evader = UsdGeom.Sphere.Define(
-    stage, "/World/evader_replay"
+pursuer_ops = []
+pursuer_orient_ops = []
+
+for index in range(3):
+    prim = create_prim(
+        f"/World/pursuer_{index}",
+        usd_path=hummingbird_usd,
+    )
+    translate, orient = _transform_ops(prim)
+    pursuer_ops.append(translate)
+    pursuer_orient_ops.append(orient)
+
+evader = create_prim(
+    "/World/evader_replay",
+    usd_path=hummingbird_usd,
 )
-evader.CreateRadiusAttr(0.5)
-evader.CreateDisplayColorAttr([(1.0, 0.05, 0.05)])
-evader_op = evader.AddTranslateOp()
+evader_op, evader_orient_op = _transform_ops(evader)
 
 camera = rep.create.camera(
-    position=(12.0, -14.0, 12.0),
-    look_at=(8.0, 8.0, 2.5),
+    position=(14.0, -8.0, 18.0),
+    look_at=(8.0, 16.0, 3.0),
 )
 
 rep.create.light(
@@ -137,10 +143,11 @@ for frame in frames:
     ):
         pursuer_ops[index].Set(Gf.Vec3d(*xyz))
         pursuer_orient_ops[index].Set(
-            Gf.Quatf(float(quat[0]), Gf.Vec3f(*map(float, quat[1:])))
+            Gf.Quatd(float(quat[0]), Gf.Vec3d(*map(float, quat[1:])))
         )
 
     evader_op.Set(Gf.Vec3d(*frame["target_xyz"]))
+    evader_orient_op.Set(Gf.Quatd(1.0, Gf.Vec3d(0.0, 0.0, 0.0)))
     rep.orchestrator.step(rt_subframes=2)
 
     image = rgb.get_data()
