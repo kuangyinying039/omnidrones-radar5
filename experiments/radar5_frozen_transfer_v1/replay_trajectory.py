@@ -19,11 +19,11 @@ simulation_app = SimulationApp(
     ),
 )
 
-from pxr import Gf, UsdGeom
+from pxr import Gf, Sdf, UsdGeom, UsdShade
 import omni.usd
 import omni.replicator.core as rep
 from omni.isaac.core.utils.prims import create_prim
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 trajectory_path = Path(
     "runs/radar5_single_scene_seed7000000/trajectory.json"
@@ -39,6 +39,21 @@ with trajectory_path.open() as handle:
 scene = data["scene"]
 frames = data["frames"]
 stage = omni.usd.get_context().get_stage()
+
+
+def _bind_material(prim, name, color, opacity=1.0):
+    material = UsdShade.Material.Define(stage, f"/World/Looks/{name}")
+    shader = UsdShade.Shader.Define(stage, f"/World/Looks/{name}/Shader")
+    shader.CreateIdAttr("UsdPreviewSurface")
+    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+        Gf.Vec3f(*color)
+    )
+    shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(float(opacity))
+    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+    UsdShade.MaterialBindingAPI.Apply(prim).Bind(material)
+
+
+building_color = (0.18, 0.62, 0.78)
 
 ground = UsdGeom.Cube.Define(stage, "/World/replay_ground")
 ground.AddScaleOp().Set(
@@ -64,6 +79,7 @@ for index, (rect, height) in enumerate(
     )
     building.CreateDisplayColorAttr([(0.35, 0.38, 0.42)])
     building.CreateDisplayOpacityAttr([0.28])
+    _bind_material(building.GetPrim(), f"Building_{index}", building_color, 0.22)
 
 # USD transform order: translate first, then scale.
 for prim in [ground] + [
@@ -98,6 +114,7 @@ def _transform_ops(prim):
 
 pursuer_ops = []
 pursuer_orient_ops = []
+pursuer_marker_ops = []
 
 for index in range(3):
     prim = create_prim(
@@ -107,16 +124,24 @@ for index in range(3):
     translate, orient = _transform_ops(prim)
     pursuer_ops.append(translate)
     pursuer_orient_ops.append(orient)
+    marker = UsdGeom.Sphere.Define(stage, f"/World/pursuer_marker_{index}")
+    marker.CreateRadiusAttr(0.22)
+    marker.CreateDisplayColorAttr([(0.05, 0.25, 1.0)])
+    pursuer_marker_ops.append(marker.AddTranslateOp())
 
 evader = create_prim(
     "/World/evader_replay",
     usd_path=hummingbird_usd,
 )
 evader_op, evader_orient_op = _transform_ops(evader)
+evader_marker = UsdGeom.Sphere.Define(stage, "/World/evader_marker")
+evader_marker.CreateRadiusAttr(0.28)
+evader_marker.CreateDisplayColorAttr([(1.0, 0.05, 0.05)])
+evader_marker_op = evader_marker.AddTranslateOp()
 
 camera = rep.create.camera(
-    position=(14.0, -8.0, 18.0),
-    look_at=(8.0, 16.0, 3.0),
+    position=(18.0, -18.0, 27.0),
+    look_at=(8.0, 12.0, 3.0),
 )
 
 rep.create.light(
@@ -142,11 +167,13 @@ for frame in frames:
         zip(frame["pursuers_xyz"], frame["pursuers_quat"])
     ):
         pursuer_ops[index].Set(Gf.Vec3d(*xyz))
+        pursuer_marker_ops[index].Set(Gf.Vec3d(*xyz))
         pursuer_orient_ops[index].Set(
             Gf.Quatd(float(quat[0]), Gf.Vec3d(*map(float, quat[1:])))
         )
 
     evader_op.Set(Gf.Vec3d(*frame["target_xyz"]))
+    evader_marker_op.Set(Gf.Vec3d(*frame["target_xyz"]))
     evader_orient_op.Set(Gf.Quatd(1.0, Gf.Vec3d(0.0, 0.0, 0.0)))
     rep.orchestrator.step(rt_subframes=2)
 

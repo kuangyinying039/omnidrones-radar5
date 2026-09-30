@@ -156,7 +156,7 @@ actor = FrozenPursuitActor(
 )
 
 print("ROLLOUT_SETUP_OK", flush=True)
-decisions = 31
+decisions = int(os.environ.get("RADAR5_DECISIONS", "300"))
 physics_per_decision = 13
 heights = []
 trajectory = []
