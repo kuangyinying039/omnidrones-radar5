@@ -75,10 +75,7 @@ for prim in [ground] + [
 
 pursuer_ops = []
 pursuer_orient_ops = []
-hummingbird_usd = (
-    "/opt/lab/src/OmniDrones-isaac41/"
-    "assets/usd/hummingbird.usd"
-)
+hummingbird_usd = os.environ["HUMMINGBIRD_USD"]
 
 for index in range(3):
     prim = create_prim(
@@ -86,8 +83,23 @@ for index in range(3):
         usd_path=hummingbird_usd,
     )
     xform = UsdGeom.Xformable(prim)
-    pursuer_ops.append(xform.AddTranslateOp())
-    pursuer_orient_ops.append(xform.AddOrientOp())
+    ops = xform.GetOrderedXformOps()
+    translate = next(
+        (op for op in ops
+         if op.GetOpType() == UsdGeom.XformOp.TypeTranslate),
+        None,
+    )
+    orient = next(
+        (op for op in ops
+         if op.GetOpType() == UsdGeom.XformOp.TypeOrient),
+        None,
+    )
+    pursuer_ops.append(
+        translate if translate is not None else xform.AddTranslateOp()
+    )
+    pursuer_orient_ops.append(
+        orient if orient is not None else xform.AddOrientOp()
+    )
 
 evader = UsdGeom.Sphere.Define(
     stage, "/World/evader_replay"
