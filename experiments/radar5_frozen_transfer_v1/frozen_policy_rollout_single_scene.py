@@ -1,5 +1,6 @@
 import os
 import json
+import os
 import numpy as np
 import torch
 from hydra import compose, initialize_config_dir
@@ -44,12 +45,6 @@ cfg.sim.use_flatcache = True
 
 
 simulation_app = init_simulation_app(cfg)
-
-import omni.replicator.core as rep
-from PIL import Image
-
-FRAME_DIR = "runs/radar5_single_scene_seed7000000/frames"
-os.makedirs(FRAME_DIR, exist_ok=True)
 
 # Use a local geometric ground plane instead of the remote default_environment.usd.
 from omni.isaac.core.objects import GroundPlane
@@ -110,24 +105,6 @@ _evader_xform = UsdGeom.Xformable(_evader_sphere.GetPrim())
 _evader_translate = _evader_xform.AddTranslateOp()
 _evader_translate.Set(Gf.Vec3d(4.0, 4.0, 1.8))
 
-viz_camera = rep.create.camera(
-    position=(8.0, -10.0, 9.0),
-    look_at=(0.0, 0.0, 1.5),
-)
-viz_light = rep.create.light(
-    light_type="sphere",
-    position=(3.0, -4.0, 10.0),
-    intensity=50000,
-    scale=5.0,
-)
-render_product = rep.create.render_product(
-    viz_camera,
-    (960, 720),
-)
-
-rgb_annotator = rep.AnnotatorRegistry.get_annotator("rgb")
-rgb_annotator.attach([render_product])
-
 bridge = IsaacPursuitObservationBridge(
     __import__(
         "experiments.radar5_frozen_transfer_v1.quadrotor_pursuit_env",
@@ -139,6 +116,35 @@ bridge = IsaacPursuitObservationBridge(
     )
 )
 bridge.reset()
+
+# Put the Isaac vehicles at the exact Radar5 episode coordinates.  The
+# policy and the visual replay therefore use one world frame.
+initial_xyz = np.column_stack(
+    [bridge.env.positions, bridge.env.altitudes]
+).astype(np.float32)
+env.drone.set_world_poses(
+    torch.as_tensor(initial_xyz, device=env.device).unsqueeze(0),
+    torch.tensor([[[1.0, 0.0, 0.0, 0.0]] * 3], device=env.device),
+)
+env.drone.set_velocities(
+    torch.zeros((1, 3, 6), device=env.device)
+)
+
+# Build the same Radar5 rectangles in the Isaac stage.
+for index, (rect, height) in enumerate(
+    zip(bridge.env.buildings, bridge.env.building_heights)
+):
+    x0, y0, x1, y1 = rect
+    building = UsdGeom.Cube.Define(
+        _stage, f"/World/radar5_building_{index}"
+    )
+    building.AddTranslateOp().Set(
+        Gf.Vec3d((x0 + x1) / 2, (y0 + y1) / 2, height / 2)
+    )
+    building.AddScaleOp().Set(
+        Gf.Vec3f((x1 - x0) / 2, (y1 - y0) / 2, height / 2)
+    )
+    building.CreateDisplayColorAttr([(0.35, 0.38, 0.42)])
 
 # Align Radar5 target coordinates with the Isaac Formation world frame.
 
@@ -240,17 +246,6 @@ try:
             print("WORLD_COORD_DEBUG", json.dumps({"pursuers": pursuer_xyz.tolist(), "target": target_xyz.tolist()}), flush=True)
         if min_distance <= 1.0:
             captures = 1
-            rep.orchestrator.step(rt_subframes=4)
-            final_frame = rgb_annotator.get_data()
-            Image.fromarray(final_frame[:, :, :3]).save(
-                os.path.join(FRAME_DIR, "capture_final.png")
-            )
-
-        rep.orchestrator.step(rt_subframes=2)
-        frame = rgb_annotator.get_data()
-        Image.fromarray(frame[:, :, :3]).save(
-            os.path.join(FRAME_DIR, f"frame_{decision + 1:04d}.png")
-        )
 
         trajectory.append({
             "decision": decision,

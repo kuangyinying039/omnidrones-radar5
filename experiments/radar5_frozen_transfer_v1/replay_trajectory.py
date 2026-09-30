@@ -21,6 +21,7 @@ simulation_app = SimulationApp(
 from pxr import Gf, UsdGeom
 import omni.usd
 import omni.replicator.core as rep
+from omni.isaac.core.utils.prims import create_prim
 from PIL import Image
 
 trajectory_path = Path(
@@ -73,14 +74,20 @@ for prim in [ground] + [
     prim.SetXformOpOrder([translate, scale])
 
 pursuer_ops = []
+pursuer_orient_ops = []
+hummingbird_usd = (
+    "/opt/lab/src/OmniDrones-isaac41/"
+    "assets/usd/hummingbird.usd"
+)
 
 for index in range(3):
-    pursuer = UsdGeom.Sphere.Define(
-        stage, f"/World/pursuer_{index}"
+    prim = create_prim(
+        f"/World/pursuer_{index}",
+        usd_path=hummingbird_usd,
     )
-    pursuer.CreateRadiusAttr(0.35)
-    pursuer.CreateDisplayColorAttr([(0.1, 0.3, 1.0)])
-    pursuer_ops.append(pursuer.AddTranslateOp())
+    xform = UsdGeom.Xformable(prim)
+    pursuer_ops.append(xform.AddTranslateOp())
+    pursuer_orient_ops.append(xform.AddOrientOp())
 
 evader = UsdGeom.Sphere.Define(
     stage, "/World/evader_replay"
@@ -113,8 +120,13 @@ rgb = rep.AnnotatorRegistry.get_annotator("rgb")
 rgb.attach([render_product])
 
 for frame in frames:
-    for index, xyz in enumerate(frame["pursuers_xyz"]):
+    for index, (xyz, quat) in enumerate(
+        zip(frame["pursuers_xyz"], frame["pursuers_quat"])
+    ):
         pursuer_ops[index].Set(Gf.Vec3d(*xyz))
+        pursuer_orient_ops[index].Set(
+            Gf.Quatf(float(quat[0]), Gf.Vec3f(*map(float, quat[1:])))
+        )
 
     evader_op.Set(Gf.Vec3d(*frame["target_xyz"]))
     rep.orchestrator.step(rt_subframes=2)
