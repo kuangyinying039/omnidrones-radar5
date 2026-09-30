@@ -1,0 +1,12 @@
+seed: 7000000
+n_pursuers: 3
+n_evaders: 1
+physics_dt: 0.01
+decision_dt: 0.20
+capture_radius_m: 1.0
+max_decisions: 300
+asset: hummingbird
+policy: mappo
+checkpoint: data/checkpoints/mappo_trained_seed11_actor.pt
+observation_dim: 99
+action_dim: 4
