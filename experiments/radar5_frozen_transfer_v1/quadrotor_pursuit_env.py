@@ -219,6 +219,12 @@ class QuadrotorPursuitEnv(PursuitEvasion3DEnv):
         self._lidar_mask_scan = -1
         self._lidar_detections = np.zeros((cfg.n_uavs, cfg.n_targets), dtype=bool)
         self._lidar_opening_scan = True
+        # Optional measurements supplied by an external simulator sensor.
+        # When populated, _target_measurement never consults the geometric
+        # lidar surrogate for policy observations.
+        self._external_sensor_scan = None
+        self._external_sensor_measurements = {}
+        self._external_sensor_visibility = np.zeros((cfg.n_uavs, cfg.n_targets), dtype=bool)
         self._visible_steps = 0
 
     def direct_visibility_mask(self):
@@ -245,6 +251,13 @@ class QuadrotorPursuitEnv(PursuitEvasion3DEnv):
 
     def _target_measurement(self, agent, target_id):
         cfg = self.cfg
+        if self._external_sensor_scan is not None:
+            key = (int(agent), int(target_id))
+            if key not in self._external_sensor_measurements:
+                return None, 0.0
+            measurement, variance = self._external_sensor_measurements[key]
+            self._lidar_detections[agent, target_id] = True
+            return np.asarray(measurement, dtype=float).copy(), float(variance)
         if cfg.pursuit_target_observable:
             key = (agent, target_id)
             if self._game_measurement_steps.get(key) == self.t:
@@ -276,6 +289,33 @@ class QuadrotorPursuitEnv(PursuitEvasion3DEnv):
         sigma = cfg.lidar_position_noise_std + cfg.lidar_noise_per_meter*np.linalg.norm(truth-origin)
         self._lidar_detections[agent, target_id] = True
         return truth + self._lidar_rng.normal(0.0, sigma, 3), float(sigma*sigma)
+
+    def set_external_sensor_scan(self, scan_time, measurements, visibility, variances=None):
+        """Install one simulator sensor scan for the next policy observation.
+
+        ``measurements`` maps ``(uav, target)`` to world XYZ. Missing entries
+        mean no detection. The scan is immutable until the next call and is
+        tagged with the simulator timestamp for synchronization diagnostics.
+        """
+        scan_time = float(scan_time)
+        if not np.isfinite(scan_time):
+            raise ValueError("external sensor scan time must be finite")
+        mask = np.asarray(visibility, dtype=bool)
+        expected = (self.cfg.n_uavs, self.cfg.n_targets)
+        if mask.shape != expected:
+            raise ValueError(f"external sensor visibility must have shape {expected}")
+        self._external_sensor_scan = scan_time
+        self._external_sensor_visibility = mask.copy()
+        self._external_sensor_measurements = {}
+        variances = variances or {}
+        for key, value in measurements.items():
+            vector = np.asarray(value, dtype=float)
+            if vector.shape != (3,) or not np.isfinite(vector).all():
+                raise ValueError(f"invalid external sensor measurement for {key}")
+            variance = float(variances.get(key, 0.0))
+            if variance < 0 or not np.isfinite(variance):
+                raise ValueError(f"invalid external sensor variance for {key}")
+            self._external_sensor_measurements[(int(key[0]), int(key[1]))] = (vector, variance)
 
     def _initialize_handoff_triangle_formation(self):
         super()._initialize_handoff_triangle_formation()

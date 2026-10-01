@@ -1,7 +1,8 @@
-"""Feed measured Isaac Lab pursuer states into Radar5's sensor and graph path.
+"""Feed measured Isaac Lab pursuer states and native sensor scans into Radar5.
 
-Only pursuer state is replaced. Target dynamics, geometric lidar surrogate,
-dropout, tracking and communication remain the original Radar5 implementation.
+Pursuer state is replaced and an optional native Isaac scan can replace the
+geometric lidar measurement path. The frozen actor receives only policy
+observations, never target truth fields.
 The frozen actor receives only agent_observations, comm_adjacency and
 hetero_graph from this bridge, never the environment's target truth fields.
 """
@@ -17,10 +18,12 @@ from quadrotor_pursuit_env import QuadrotorPursuitConfig, QuadrotorPursuitEnv
 
 
 class IsaacPursuitObservationBridge:
-    def __init__(self, cfg: QuadrotorPursuitConfig):
+    def __init__(self, cfg: QuadrotorPursuitConfig, sensor_adapter=None):
         if cfg.n_uavs != 3 or cfg.n_targets != 1:
             raise ValueError("frozen pursuit actor requires three pursuers and one target")
         self.env = QuadrotorPursuitEnv(cfg)
+        self.sensor_adapter = sensor_adapter
+        self.last_sensor_diagnostics = None
 
     def reset(self) -> dict:
         return self.env.reset()
@@ -46,6 +49,25 @@ class IsaacPursuitObservationBridge:
 
     def observe(self) -> dict:
         return self.env.observe_search()
+
+    def set_native_sensor_scan(self, scan: dict) -> None:
+        """Install a validated Isaac scan before calling :meth:`observe`."""
+        if self.sensor_adapter is None:
+            raise RuntimeError("native sensor scan supplied but no sensor adapter is configured")
+        required = {"scan_time", "measurements", "variances", "visible"}
+        missing = required.difference(scan)
+        if missing:
+            raise ValueError(f"native sensor scan missing fields: {sorted(missing)}")
+        self.env.set_external_sensor_scan(
+            scan["scan_time"], scan["measurements"], scan["visible"], scan["variances"]
+        )
+        self.last_sensor_diagnostics = {
+            "sensor_mode": "isaac_lidar",
+            "scan_sequence": int(scan.get("scan_sequence", -1)),
+            "scan_age_s": float(scan.get("scan_age_s", 0.0)),
+            "visible_mask": np.asarray(scan["visible"], dtype=bool).tolist(),
+            "measurement_rmse_m": float(scan.get("rmse_m", float("nan"))),
+        }
 
     def filter_references(self, world_velocities: np.ndarray) -> tuple[np.ndarray, list[list[str]]]:
         """Apply Radar5's policy-causal local velocity projection."""
